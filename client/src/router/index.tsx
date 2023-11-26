@@ -5,7 +5,7 @@ const ConferencePage = lazy(() => import(`@/pages/Conference`));
 
 const routes: RouteObject[] = [
   { path: "/", element: <Navigate to="/conference/123" replace /> },
-  { path: "/conference/:conferecneId", element: <ConferencePage /> },
+  { path: "/conference/:conferenceId", element: <ConferencePage /> },
 ];
 
 const Router = () => {

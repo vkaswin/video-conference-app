@@ -1,11 +1,11 @@
 import {
   ChangeEvent,
-  Fragment,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import { useParams } from "react-router-dom";
 import classNames from "classnames";
 
 type IDeviceList = Record<string, MediaDeviceInfo[]>;
@@ -22,6 +22,8 @@ const PreviewRoom = () => {
 
   const [userName, setUserName] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+
+  const { conferenceId } = useParams();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -120,6 +122,10 @@ const PreviewRoom = () => {
     else if (kind === "audiooutput") setAudioOutputDeviceId(deviceId);
   };
 
+  const handleJoinConference = () => {
+    console.log("join", conferenceId);
+  };
+
   return (
     <div className="container h-full place-content-center grid grid-cols-preview gap-5 mx-auto">
       <div
@@ -198,6 +204,7 @@ const PreviewRoom = () => {
             userName ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-400"
           )}
           disabled={!userName}
+          onClick={handleJoinConference}
         >
           Join
         </button>

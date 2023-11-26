@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Video Conference</title>
+    <script
+      src="https://cdn.socket.io/4.7.2/socket.io.min.js"
+      integrity="sha384-mZLF4UVrpi/QTWPA7BjNPEnkIfRFn4ZEO3Qt/HFklTJBj/gBOV8G3HcKn4NfQblz"
+      crossorigin="anonymous"
+    ></script>
+    <style>
+      * {
+        margin: 0px;
+        padding: 0px;
+        box-sizing: border-box;
+      }
+      html {
+        height: 100%;
+      }
+      body {
+        height: inherit;
+      }
+      .container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, 400px);
+        gap: 25px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="conferenceContainer" class="container">
+      <video id="localVideo"></video>
+    </div>
+
+    <script defer>
+      const socket = io();
+      const localVideo = document.querySelector("#localVideo");
+      const width = 400;
+      const height = 300;
+      const conferenceContainer = document.querySelector(
+        "#conferenceContainer"
+      );
+      let videoContainers = new Map();
+      const config = { codec: "vp8", width: 400, height: 300 };
+
+      const createContainer = async (id) => {
+        const video = document.createElement("video");
+        video.width = width;
+        video.height = height;
+        video.id = id;
+        const trackGenerator = new MediaStreamTrackGenerator({ kind: "video" });
+        const stream = new MediaStream([trackGenerator]);
+        let writer = await trackGenerator.writable.getWriter();
+        await writer.ready;
+
+        const handleDecodeOutput = async (chunk) => {
+          const bitmap = await createImageBitmap(chunk);
+
+          let videoFrame = new VideoFrame(bitmap, {
+            timestamp: chunk.timestamp,
+          });
+
+          writer.write(videoFrame);
+          videoFrame.close();
+        };
+
+        const handleDecodeError = (error) => {
+          console.log(error);
+        };
+
+        const decoder = new VideoDecoder({
+          output: handleDecodeOutput,
+          error: handleDecodeError,
+        });
+
+        decoder.configure(config);
+
+        videoContainers.set(id, {
+          stream,
+          writer,
+          trackGenerator,
+          video,
+          decoder,
+        });
+
+        conferenceContainer.append(video);
+
+        video.srcObject = stream;
+        video.play();
+      };
+
+      socket.on("room-created", (data) => {
+        console.log(data);
+      });
+
+      socket.on("receiveVideoChunk", (data, id) => {
+        if (!videoContainers.has(id)) return;
+
+        const encodedChunk = new EncodedVideoChunk({
+          data: data.buffer,
+          timestamp: data.timestamp,
+          type: data.type,
+        });
+
+        videoContainers.get(id).decoder.decode(encodedChunk);
+      });
+
+      socket.on("userIn", (id) => {
+        createContainer(id);
+      });
+
+      localVideo.width = width;
+      localVideo.height = height;
+
+      const joinConference = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+
+        localVideo.srcObject = stream;
+        localVideo.play();
+
+        const videoTrack = stream.getVideoTracks()[0];
+
+        const trackProcessor = new MediaStreamTrackProcessor({
+          track: videoTrack,
+        });
+
+        const handleEncodeOutput = async (chunk) => {
+          let buffer = new ArrayBuffer(chunk.byteLength);
+          chunk.copyTo(buffer);
+
+          socket.emit("sendVideoChunk", {
+            buffer,
+            type: chunk.type,
+            timestamp: chunk.timestamp,
+          });
+        };
+
+        const handleEncodeError = (error) => {
+          console.log(error);
+        };
+
+        const encoder = new VideoEncoder({
+          output: handleEncodeOutput,
+          error: handleEncodeError,
+        });
+
+        encoder.configure(config);
+
+        const handleWriteStream = async (videoFrame, controller) => {
+          encoder.encode(videoFrame);
+          videoFrame.close();
+        };
+
+        const writable = new WritableStream({
+          write: handleWriteStream,
+        });
+
+        trackProcessor.readable.pipeTo(writable);
+      };
+    </script>
+  </body>
+</html>

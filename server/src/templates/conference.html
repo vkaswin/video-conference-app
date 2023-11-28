@@ -18,6 +18,7 @@
       }
       body {
         height: inherit;
+        padding: 15px;
       }
       .container {
         display: grid;
@@ -27,38 +28,49 @@
     </style>
   </head>
   <body>
-    <div id="conferenceContainer" class="container">
-      <video id="localVideo"></video>
-    </div>
+    <div id="conferenceContainer" class="container"></div>
 
     <script defer>
-      const socket = io();
-      const localVideo = document.querySelector("#localVideo");
-      const width = 400;
-      const height = 300;
+      const encodeConfig = {
+        codec: "vp8",
+        width: 640,
+        height: 360,
+        // avc: {
+        //   format: "annexb",
+        // },
+        // framerate: 25,
+        // hardwareAcceleration: "no-preference",
+        // latencyMode: "realtime",
+        // bitrateMode: "constant",
+        // scalabilityMode: "L1T2",
+        // bitrate: 15e5,
+      };
+      const decodeConfig = {
+        codec: "vp8",
+        width: 640,
+        height: 360,
+      };
       const conferenceContainer = document.querySelector(
         "#conferenceContainer"
       );
-      let videoContainers = new Map();
-      const config = { codec: "vp8", width: 400, height: 300 };
 
-      const createContainer = async (id) => {
+      let videoContainers = new Map();
+      let keyFrames = new Set();
+      let videoUpStream, socket, encoder, localVideo;
+
+      const createVideoContainer = async (id) => {
+        if (videoContainers.has(id)) return;
+
         const video = document.createElement("video");
-        video.width = width;
-        video.height = height;
+        video.width = 400;
+        video.height = 225;
         video.id = id;
         const trackGenerator = new MediaStreamTrackGenerator({ kind: "video" });
         const stream = new MediaStream([trackGenerator]);
         let writer = await trackGenerator.writable.getWriter();
         await writer.ready;
 
-        const handleDecodeOutput = async (chunk) => {
-          const bitmap = await createImageBitmap(chunk);
-
-          let videoFrame = new VideoFrame(bitmap, {
-            timestamp: chunk.timestamp,
-          });
-
+        const handleDecodeOutput = async (videoFrame) => {
           writer.write(videoFrame);
           videoFrame.close();
         };
@@ -72,7 +84,7 @@
           error: handleDecodeError,
         });
 
-        decoder.configure(config);
+        decoder.configure(decodeConfig);
 
         videoContainers.set(id, {
           stream,
@@ -88,11 +100,20 @@
         video.play();
       };
 
-      socket.on("room-created", (data) => {
-        console.log(data);
-      });
+      const removeVideoContainer = (id) => {
+        if (!videoContainers.has(id)) return;
 
-      socket.on("receiveVideoChunk", (data, id) => {
+        let { decoder, writer, stream, video } = videoContainers.get(id);
+        decoder.close();
+        writer.close();
+        closeStream(stream);
+        video.remove();
+        videoContainers.delete(id);
+      };
+
+      const decodeVideoChunk = async (data, id) => {
+        if (!keyFrames.has(id)) return;
+
         if (!videoContainers.has(id)) return;
 
         const encodedChunk = new EncodedVideoChunk({
@@ -102,25 +123,49 @@
         });
 
         videoContainers.get(id).decoder.decode(encodedChunk);
-      });
+      };
 
-      socket.on("userIn", (id) => {
-        createContainer(id);
-      });
+      const initSocket = () => {
+        socket = io();
 
-      localVideo.width = width;
-      localVideo.height = height;
+        socket.on("userIn", createVideoContainer);
 
-      const joinConference = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+        socket.on("receiveVideoChunk", decodeVideoChunk);
+
+        socket.on("userOut", removeVideoContainer);
+
+        socket.on("receiveKeyFrame", async (data, id) => {
+          await createVideoContainer(id);
+          keyFrames.add(id);
+          decodeVideoChunk(data, id);
+        });
+
+        socket.emit("joinConference");
+      };
+
+      const createLocalContainer = async () => {
+        localVideo = document.createElement("video");
+        localVideo.width = 400;
+        localVideo.height = 225;
+        localVideo.id = "local";
+
+        videoUpStream = await navigator.mediaDevices.getUserMedia({
+          video: { aspectRatio: 16 / 9 },
           audio: false,
         });
 
-        localVideo.srcObject = stream;
+        localVideo.srcObject = videoUpStream;
         localVideo.play();
 
-        const videoTrack = stream.getVideoTracks()[0];
+        conferenceContainer.append(localVideo);
+      };
+
+      const joinConference = async () => {
+        await createLocalContainer();
+
+        initSocket();
+
+        const videoTrack = videoUpStream.getVideoTracks()[0];
 
         const trackProcessor = new MediaStreamTrackProcessor({
           track: videoTrack,
@@ -141,23 +186,52 @@
           console.log(error);
         };
 
-        const encoder = new VideoEncoder({
+        encoder = new VideoEncoder({
           output: handleEncodeOutput,
           error: handleEncodeError,
         });
 
-        encoder.configure(config);
+        encoder.configure(encodeConfig);
 
-        const handleWriteStream = async (videoFrame, controller) => {
-          encoder.encode(videoFrame);
-          videoFrame.close();
+        const frameReader = trackProcessor.readable.getReader();
+
+        const processVideoFrame = async () => {
+          try {
+            const { done, value: videoFrame } = await frameReader.read();
+            if (done) return;
+            encoder.encode(videoFrame);
+            videoFrame.close();
+            processVideoFrame();
+          } catch (error) {
+            console.log(error);
+          }
         };
 
-        const writable = new WritableStream({
-          write: handleWriteStream,
-        });
+        processVideoFrame();
+      };
 
-        trackProcessor.readable.pipeTo(writable);
+      const closeStream = (stream) => {
+        stream.getVideoTracks()[0].stop();
+      };
+
+      const leaveConference = () => {
+        socket.close();
+
+        for (let [key, { decoder, stream, video, writer }] of videoContainers) {
+          decoder.close();
+          writer.close();
+          closeStream(stream);
+          video.remove();
+        }
+
+        videoContainers.clear();
+        localVideo.remove();
+        closeStream(videoUpStream);
+        encoder.close();
+
+        socket = undefined;
+        encoder = undefined;
+        videoUpStream = undefined;
       };
     </script>
   </body>

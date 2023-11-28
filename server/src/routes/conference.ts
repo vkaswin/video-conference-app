@@ -3,6 +3,6 @@ import { getConferencePage } from "../controllers/conference";
 
 const router = Router();
 
-router.get("/:conferenceId", getConferencePage);
+router.get("/", getConferencePage);
 
 export default router;

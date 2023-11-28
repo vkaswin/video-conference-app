@@ -8,6 +8,10 @@ dotenv.config();
 
 const port = process.env.PORT;
 const app = express();
+const keyFrames = new Map<
+  string,
+  { buffer: ArrayBuffer; type: string; timestamp: number }
+>();
 
 app
   .use(express.json())
@@ -18,11 +22,30 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
 io.on("connection", (socket) => {
-  console.log(socket.rooms);
-  socket.broadcast.emit("userIn", socket.id);
+  socket.on("joinConference", () => {
+    socket.broadcast.emit("userIn", socket.id);
+
+    for (let [socketId, keyFrame] of keyFrames) {
+      if (socketId === socket.id) continue;
+      socket.emit("receiveKeyFrame", keyFrame, socketId);
+    }
+  });
 
   socket.on("sendVideoChunk", (chunk) => {
-    socket.broadcast.emit("receiveVideoChunk", chunk, socket.id);
+    let isKeyFrame = chunk.type === "key";
+
+    if (isKeyFrame) keyFrames.set(socket.id, chunk);
+
+    socket.broadcast.emit(
+      isKeyFrame ? "receiveKeyFrame" : "receiveVideoChunk",
+      chunk,
+      socket.id
+    );
+  });
+
+  socket.on("disconnect", () => {
+    keyFrames.delete(socket.id);
+    socket.broadcast.emit("userOut", socket.id);
   });
 });
 
